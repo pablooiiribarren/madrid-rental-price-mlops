@@ -1,3 +1,36 @@
+# Data
+data/
+*.csv
+*.tsv
+*.parquet
+
+# Models
+*.pkl
+*.joblib
+*.tar.gz
+model/
+
+# Credentials
+.env
+*.pem
+.aws/
+credentials
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
