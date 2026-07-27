@@ -38,6 +38,8 @@ Model Monitor + CloudWatch ──► SageMaker Pipelines (retraining)
 | Deployment | SageMaker Hosting (real-time endpoint) |
 | Monitoring | Model Monitor, CloudWatch, SageMaker Pipelines |
 
+![SageMaker domain](docs/images/01_sagemaker_domain.png)
+
 ---
 
 ## Results
@@ -49,7 +51,7 @@ Model Monitor + CloudWatch ──► SageMaker Pipelines (retraining)
 
 Automatic Model Tuning improved explanatory power by **9.5%** without changing a single line of model code, exploring the hyperparameter space in ~6 minutes through Bayesian optimisation rather than exhaustive grid search.
 
-Baseline test metrics: MAE `[447.61]` € · RMSE `[844.93]` € · R² 0.7191.
+Baseline test metrics: MAE 447.61 € · RMSE 844.93 € · R² 0.7191.
 
 > **Note on scale:** the target variable spans a wide price range, so absolute errors in euros should be read alongside R² rather than in isolation.
 
@@ -58,7 +60,7 @@ Baseline test metrics: MAE `[447.61]` € · RMSE `[844.93]` € · R² 0.7191.
 ## Dataset
 
 *Madrid Province Rent Data* — thousands of rental listings with physical, location and amenity features.
-Source: [`[enlace a Kaggle]`]([URL])
+Source: [`https://www.kaggle.com/datasets/mapecode/madrid-province-rent-data`]([URL])
 
 The dataset is **not** included in this repository. To reproduce, download it and upload to `s3://<your-bucket>/raw/`.
 
@@ -68,14 +70,14 @@ The dataset is **not** included in this repository. To reproduce, download it an
 
 ```
 ├── glue/
-│   └── etl_job.py                  # PySpark ETL job (cleaning, typing, feature prep)
+│   └── etl_job.py                       # PySpark ETL job (cleaning, typing, feature prep)
 ├── sagemaker/
-│   ├── train.py                    # training script executed by SageMaker Training
-│   ├── 01_training_and_tuning.ipynb
-│   ├── 02_clarify_and_registry.ipynb
-│   ├── 03_deploy_endpoint.ipynb
-│   └── 04_monitoring_pipeline.ipynb
-├── docs/images/                    # console screenshots
+│   ├── train.py                         # training script executed by SageMaker Training
+│   ├── 01_training.ipynb
+│   ├── 02_experiments.ipynb
+│   ├── 03_tuning_and_clarify.ipynb
+│   └── 04_registry_deploy_monitoring.ipynb
+├── docs/images/                         # console screenshots
 └── requirements.txt
 ```
 
@@ -85,39 +87,44 @@ The dataset is **not** included in this repository. To reproduce, download it an
 
 ### 1. Ingestion and ETL — AWS Glue
 
-A PySpark job reads raw listings from `s3://<bucket>/raw/`, handles nulls and type inconsistencies, prepares the feature set and writes the processed dataset to `s3://<bucket>/processed/`. Schema is registered in the Glue Data Catalog.
-
-`[1-2 frases: qué transformaciones concretas hace tu ETL — nulos, encoding, columnas derivadas]`
+A PySpark job reads raw listings from `s3://<bucket>/raw/`, drops duplicates, casts numeric types, filters null/invalid prices and trims the top and bottom 1% as outliers. Missing values are imputed (median for numeric columns, "Desconocido" for categoricals, 0 for boolean amenities), and two derived columns are added: property age (`antiguedad`) and price per square metre (`precio_por_m2`, kept for analysis, excluded from training to avoid leakage). The result is written to `s3://<bucket>/processed/` and the schema is registered in the Glue Data Catalog.
 
 ### 2. Training and tuning — SageMaker
 
 `train.py` trains a GradientBoosting regressor on the processed data. Runs are grouped under a **SageMaker Experiment** (`alquiler-madrid-precio`) so metrics are comparable across configurations.
 
-**Automatic Model Tuning** then launches parallel training jobs with a Bayesian search strategy, maximising R². Best configuration: `[hiperparámetros ganadores]`.
+**Automatic Model Tuning** then launches parallel training jobs with a Bayesian search strategy (`max_jobs=4`, `max_parallel_jobs=2`), maximising R² over the ranges `n_estimators [50, 200]`, `max_depth [3, 8]`, `learning_rate [0.01, 0.3]`. Best configuration: `learning_rate=0.1667`, `max_depth=6`, `n_estimators=110` → R² 0.7874.
 
-![Tuning jobs](docs/images/tuning-jobs.png)
+![Tuning job result](docs/images/02_tuning_result.png)
 
 ### 3. Bias auditing — SageMaker Clarify
 
 A pre-training bias analysis was configured with `district` as the facet and a €500/month target threshold, checking whether the training data encodes geographic price bias before the model learns it.
 
-`[1 frase: qué encontró el análisis — ¿hubo desequilibrio entre distritos?]`
+Results show Class Imbalance (CI) close to 1.0 for nearly every district — expected, since `district` has very high cardinality (down to individual neighbourhoods and developments) and no single value dominates the dataset. Difference in Positive Proportions in Labels (DPL) stayed around −0.002, indicating no meaningful disparity in how the €500 price threshold is distributed across districts.
 
 This step reflects **EU AI Act (Regulation 2024/1689)** data governance requirements: housing-access systems fall under Annex III, and bias examination is an explicit obligation under Art. 10.
 
 ### 4. Registry and deployment
 
-The best model is versioned in the **Model Registry** for traceability, then deployed to a real-time inference endpoint (`alquiler-madrid-endpoint`) on an `ml.m5.large` instance, with an `AllTraffic` production variant that allows future A/B or canary deployments by adding variants.
+The tuned model is versioned in the **Model Registry** for traceability. The artefact referenced by the winning tuning job failed the endpoint's ping health check on deployment, so the model was retrained with an equivalent, close configuration (`n_estimators=150`, `max_depth=6`, `learning_rate=0.05` → R² 0.7631) and deployed to a real-time inference endpoint (`alquiler-madrid-endpoint`) on an `ml.m5.large` instance, with an `AllTraffic` production variant that allows future A/B or canary deployments by adding variants.
 
-![Endpoint InService](docs/images/endpoint-inservice.png)
+![Endpoint InService](docs/images/03_endpoint_inservice.png)
 
 Test inference returned a price estimate consistent with real market values, confirming the endpoint works end to end.
 
 ### 5. Monitoring and retraining
 
-**Model Monitor** generates a statistical baseline in S3 (`constraints.json`, `statistics.json`) used as the reference for detecting future data drift. A monitoring schedule runs on `[frecuencia]`, logs are centralised in **CloudWatch**, and **SageMaker Pipelines** automates retraining.
+**Model Monitor** generates a statistical baseline in S3 (`constraints.json`, `statistics.json`) used as the reference for detecting future data drift. A monitoring schedule runs hourly (`cron(0 * ? * * *)`, DataQuality type), logs are centralised in **CloudWatch**, and **SageMaker Pipelines** automates retraining.
 
-![Model Monitor](docs/images/model-monitor.png)
+![Pipeline execution succeeded](docs/images/04_pipeline_succeeded.png)
+
+---
+
+## Known limitations
+
+- `train.py` fits `LabelEncoder` on categorical columns at training time but does not persist the encoders, so the endpoint only accepts pre-encoded integers with no documented mapping (e.g. which integer corresponds to which district). A serialized `sklearn.Pipeline` with a `ColumnTransformer` would close this gap.
+- The endpoint currently serves a retrained model (R² 0.7631) rather than the exact artefact registered in the Model Registry (R² 0.7874), due to a deployment failure documented above.
 
 ---
 
