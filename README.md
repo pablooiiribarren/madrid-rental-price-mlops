@@ -60,7 +60,7 @@ Baseline test metrics: MAE 447.61 € · RMSE 844.93 € · R² 0.7191.
 ## Dataset
 
 *Madrid Province Rent Data* — thousands of rental listings with physical, location and amenity features.
-Source: [https://www.kaggle.com/datasets/mapecode/madrid-province-rent-data]([URL])
+Source: [Kaggle — Madrid Province Rent Data](https://www.kaggle.com/datasets/mapecode/madrid-province-rent-data)
 
 The dataset is **not** included in this repository. To reproduce, download it and upload to `s3://<your-bucket>/raw/`.
 
